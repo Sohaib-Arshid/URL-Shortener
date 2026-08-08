@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  urls          Url[]
+  createdAt     DateTime  @default(now())
+}
+
+model Url {
+  id           String      @id @default(uuid())
+  longUrl      String      @db.Text
+  shortCode    String      @unique
+  clickCount   Int         @default(0)
+  userId       String
+  user         User        @relation(fields: [userId], references: [id])
+  analytics    Analytics[]
+  aiMetadata   AiMetadata?
+  expiresAt    DateTime?
+  createdAt    DateTime    @default(now())
+
+  @@index([shortCode])
+}
+
+model Analytics {
+  id         String   @id @default(uuid())
+  urlId      String
+  url        Url      @relation(fields: [urlId], references: [id])
+  country    String?
+  city       String?
+  device     String?
+  browser    String?
+  clickedAt  DateTime @default(now())
+}
+
+model AiMetadata {
+  id         String   @id @default(uuid())
+  urlId      String   @unique
+  url        Url      @relation(fields: [urlId], references: [id])
+  title      String?
+  summary    String?  @db.Text
+  category   String?
+  vectorId   String?
+  processedAt DateTime @default(now())
+}
