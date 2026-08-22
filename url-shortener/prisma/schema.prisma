@@ -1,0 +1,63 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  urls         Url[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Url {
+  id          String       @id @default(uuid())
+  longUrl     String       @db.Text
+  shortCode   String       @unique
+  clickCount  Int          @default(0)
+  
+  userId      String?      // Optional: guest users link short kar sakein (strictly login chahiye to 'String' kar dein)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  analytics   Analytics[]
+  aiMetadata  AiMetadata?
+  expiresAt   DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([userId])
+}
+
+model Analytics {
+  id        String   @id @default(uuid())
+  urlId     String
+  url       Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
+  
+  country   String?
+  city      String?
+  device    String?
+  browser   String?
+  ipAddress String?
+  clickedAt DateTime @default(now())
+
+  @@index([urlId])
+  @@index([clickedAt])
+}
+
+model AiMetadata {
+  id          String   @id @default(uuid())
+  urlId       String   @unique
+  url         Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
+  
+  title       String?
+  summary     String?  @db.Text
+  category    String?
+  vectorId    String?
+  processedAt DateTime @default(now())
+}
