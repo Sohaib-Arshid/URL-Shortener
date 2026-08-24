@@ -38,6 +38,6 @@ export const LoginSchema = z.object({
         .min(8, { message: 'Password must be at least 8 characters long' }),
 })
 
-// TypeScript types infer karna
+
 export type RegisterInput = z.infer<typeof RegisterSchema>
 export type LoginInput = z.infer<typeof LoginSchema>
