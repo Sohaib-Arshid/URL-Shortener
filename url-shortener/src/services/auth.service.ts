@@ -2,10 +2,10 @@ import ApiError from "@/utils/apiError";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db"
 import type { RegisterInput } from "@/utils/authSchema";
-import ApiResponse from "@/utils/apiResponse";
 
 export async function registerUser(input: RegisterInput) {
 
+    const name = input.name.trim();
     const email = input.email.trim().toLowerCase();
 
     const existingUser = await db.user.findUnique({
@@ -22,7 +22,7 @@ export async function registerUser(input: RegisterInput) {
 
     const user = await db.user.create({
         data: {
-            name: input.name,
+            name,
             email,
             passwordHash
         }
@@ -30,5 +30,5 @@ export async function registerUser(input: RegisterInput) {
 
     const { passwordHash: _, ...safeUser } = user
 
-    return new ApiResponse(201, safeUser, "user are created successfully")
+    return safeUser
 }
