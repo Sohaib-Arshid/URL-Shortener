@@ -74,4 +74,14 @@ export async function login(input: LoginInput) {
     const accessToken = generateToken(user.id, '15m')
 
     const refreshToken = generateToken(user.id, '7d')
+
+    return {
+        user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+        },
+        accessToken,
+        refreshToken,
+    }
 }
