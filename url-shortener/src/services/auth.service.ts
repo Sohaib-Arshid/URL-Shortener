@@ -108,28 +108,57 @@ export async function login(input: LoginInput) {
     };
 }
 
+const consumeRefreshTokenScript = `
+local currentUserId = redis.call('GET', KEYS[1])
+
+if currentUserId == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+
+return 0
+`
+
 export async function refreshAccessToken(rawRefreshToken: string) {
-    const payload = verifyToken(rawRefreshToken, "refresh");
+    const payload = verifyToken(rawRefreshToken, 'refresh')
 
-    const tokenHash = hashToken(rawRefreshToken);
-    const storedUserId = await redis.get<string>(`refresh_token:${tokenHash}`);
+    const tokenHash = hashToken(rawRefreshToken)
+    const refreshTokenKey = `refresh_token:${tokenHash}`
 
-    if (!storedUserId || storedUserId !== payload.sub) {
-        throw new ApiError(401, "Invalid or revoked refresh token");
+    const consumed = Number(
+        await redis.eval(
+            consumeRefreshTokenScript,
+            [refreshTokenKey],
+            [payload.sub]
+        )
+    )
+
+    if (consumed !== 1) {
+        throw new ApiError(401, 'Invalid or revoked refresh token')
     }
 
-    await redis.del(`refresh_token:${tokenHash}`);
+    const accessToken = generateToken(payload.sub, 'access', '15m')
+    const refreshToken = generateToken(payload.sub, 'refresh', '7d')
+    const newTokenHash = hashToken(refreshToken)
 
-    const newAccessToken = generateToken(storedUserId, "access", "15m");
-    const newRefreshToken = generateToken(storedUserId, "refresh", "7d");
-
-    const newTokenHash = hashToken(newRefreshToken);
-    await redis.set(`refresh_token:${newTokenHash}`, storedUserId, {
+    await redis.set(`refresh_token:${newTokenHash}`, payload.sub, {
         ex: REFRESH_TOKEN_TTL_SECONDS,
-    });
+    })
 
     return {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshToken,
-    };
+        accessToken,
+        refreshToken,
+    }
+}
+
+
+export async function logoutUser(rawRefreshToken?: string): Promise<void> {
+  if (!rawRefreshToken) return;
+
+  try {
+    const tokenHash = hashToken(rawRefreshToken);
+    await redis.del(`refresh_token:${tokenHash}`);
+  } catch (error) {
+    throw error;
+  }
 }
