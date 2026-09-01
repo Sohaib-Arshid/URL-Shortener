@@ -4,7 +4,9 @@ import { db } from "@/lib/db"
 import type { RegisterInput } from "@/utils/authSchema";
 import { Prisma } from '@prisma/client'
 import type { LoginInput } from "@/utils/authSchema";
-import { generateToken } from "@/utils/jwt";
+import { generateToken, verifyToken } from "@/utils/jwt";
+import { hashToken } from "@/utils/crypto";
+import { redis } from "@/lib/redis";
 
 export async function registerUser(input: RegisterInput) {
 
@@ -63,6 +65,7 @@ export async function registerUser(input: RegisterInput) {
 }
 
 const DUMMY_HASH = "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012";
+const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export async function login(input: LoginInput) {
     const email = input.email.trim().toLowerCase()
@@ -89,6 +92,11 @@ export async function login(input: LoginInput) {
     const accessToken = generateToken(user.id, "access", "15m");
     const refreshToken = generateToken(user.id, "refresh", "7d");
 
+    const tokenHash = hashToken(refreshToken);
+    await redis.set(`refresh_token:${tokenHash}`, user.id, {
+        ex: REFRESH_TOKEN_TTL_SECONDS,
+    });
+
     return {
         user: {
             id: user.id,
@@ -97,5 +105,31 @@ export async function login(input: LoginInput) {
         },
         accessToken,
         refreshToken,
+    };
+}
+
+export async function refreshAccessToken(rawRefreshToken: string) {
+    const payload = verifyToken(rawRefreshToken, "refresh");
+
+    const tokenHash = hashToken(rawRefreshToken);
+    const storedUserId = await redis.get<string>(`refresh_token:${tokenHash}`);
+
+    if (!storedUserId || storedUserId !== payload.sub) {
+        throw new ApiError(401, "Invalid or revoked refresh token");
+    }
+
+    await redis.del(`refresh_token:${tokenHash}`);
+
+    const newAccessToken = generateToken(storedUserId, "access", "15m");
+    const newRefreshToken = generateToken(storedUserId, "refresh", "7d");
+
+    const newTokenHash = hashToken(newRefreshToken);
+    await redis.set(`refresh_token:${newTokenHash}`, storedUserId, {
+        ex: REFRESH_TOKEN_TTL_SECONDS,
+    });
+
+    return {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
     };
 }
