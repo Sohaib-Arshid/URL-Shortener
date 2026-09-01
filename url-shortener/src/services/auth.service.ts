@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import { db } from "@/lib/db"
 import type { RegisterInput } from "@/utils/authSchema";
 import { Prisma } from '@prisma/client'
+import type { LoginInput } from "@/utils/authSchema";
+import { generateToken } from "@/utils/jwt";
 
 export async function registerUser(input: RegisterInput) {
 
@@ -44,8 +46,32 @@ export async function registerUser(input: RegisterInput) {
 
         throw error
     }
-    
+
     const { passwordHash: _, ...safeUser } = user
 
     return safeUser
+}
+
+export async function login(input: LoginInput) {
+    const email = input.email.trim().toLowerCase()
+
+    const user = await db.user.findUnique({
+        where: {
+            email,
+        },
+    })
+
+    if (!user) {
+        throw new ApiError(401, "invalid cradential")
+    }
+
+    const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash)
+
+    if (!isPasswordValid) {
+        throw new ApiError(401, 'Invalid cradential')
+    }
+
+    const accessToken = generateToken(user.id, '15m')
+
+    const refreshToken = generateToken(user.id, '7d')
 }
