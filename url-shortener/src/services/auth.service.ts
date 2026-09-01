@@ -15,6 +15,9 @@ export async function registerUser(input: RegisterInput) {
         where: {
             email,
         },
+        select: {
+            id: true
+        },
     })
 
     if (existingUser) {
@@ -32,7 +35,14 @@ export async function registerUser(input: RegisterInput) {
                 email,
                 passwordHash,
             },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+                createdAt: true,
+            },
         })
+        return user;
     } catch (error: unknown) {
         if (
             error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -52,6 +62,8 @@ export async function registerUser(input: RegisterInput) {
     return safeUser
 }
 
+const DUMMY_HASH = "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012";
+
 export async function login(input: LoginInput) {
     const email = input.email.trim().toLowerCase()
 
@@ -59,21 +71,23 @@ export async function login(input: LoginInput) {
         where: {
             email,
         },
+        select: {
+            id: true,
+            name: true,
+            email: true,
+            passwordHash: true,
+        },
     })
 
-    if (!user) {
-        throw new ApiError(401, "invalid cradential")
+    const targetHash = user ? user.passwordHash : DUMMY_HASH;
+    const isPasswordValid = await bcrypt.compare(input.password, targetHash);
+
+    if (!user || !isPasswordValid) {
+        throw new ApiError(401, "Invalid email or password");
     }
 
-    const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash)
-
-    if (!isPasswordValid) {
-        throw new ApiError(401, 'Invalid cradential')
-    }
-
-    const accessToken = generateToken(user.id, '15m')
-
-    const refreshToken = generateToken(user.id, '7d')
+    const accessToken = generateToken(user.id, "access", "15m");
+    const refreshToken = generateToken(user.id, "refresh", "7d");
 
     return {
         user: {
@@ -83,5 +97,5 @@ export async function login(input: LoginInput) {
         },
         accessToken,
         refreshToken,
-    }
+    };
 }
