@@ -3,6 +3,10 @@ import bcrypt from "bcryptjs";
 import { db } from "@/lib/db"
 import type { RegisterInput } from "@/utils/authSchema";
 import { Prisma } from '@prisma/client'
+import type { LoginInput } from "@/utils/authSchema";
+import { generateToken, verifyToken } from "@/utils/jwt";
+import { hashToken } from "@/utils/crypto";
+import { redis } from "@/lib/redis";
 
 export async function registerUser(input: RegisterInput) {
 
@@ -12,6 +16,9 @@ export async function registerUser(input: RegisterInput) {
     const existingUser = await db.user.findUnique({
         where: {
             email,
+        },
+        select: {
+            id: true
         },
     })
 
@@ -30,7 +37,14 @@ export async function registerUser(input: RegisterInput) {
                 email,
                 passwordHash,
             },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+                createdAt: true,
+            },
         })
+        return user;
     } catch (error: unknown) {
         if (
             error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -44,8 +58,107 @@ export async function registerUser(input: RegisterInput) {
 
         throw error
     }
-    
+
     const { passwordHash: _, ...safeUser } = user
 
     return safeUser
+}
+
+const DUMMY_HASH = "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012";
+const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+export async function login(input: LoginInput) {
+    const email = input.email.trim().toLowerCase()
+
+    const user = await db.user.findUnique({
+        where: {
+            email,
+        },
+        select: {
+            id: true,
+            name: true,
+            email: true,
+            passwordHash: true,
+        },
+    })
+
+    const targetHash = user ? user.passwordHash : DUMMY_HASH;
+    const isPasswordValid = await bcrypt.compare(input.password, targetHash);
+
+    if (!user || !isPasswordValid) {
+        throw new ApiError(401, "Invalid email or password");
+    }
+
+    const accessToken = generateToken(user.id, "access", "15m");
+    const refreshToken = generateToken(user.id, "refresh", "7d");
+
+    const tokenHash = hashToken(refreshToken);
+    await redis.set(`refresh_token:${tokenHash}`, user.id, {
+        ex: REFRESH_TOKEN_TTL_SECONDS,
+    });
+
+    return {
+        user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+        },
+        accessToken,
+        refreshToken,
+    };
+}
+
+const consumeRefreshTokenScript = `
+local currentUserId = redis.call('GET', KEYS[1])
+
+if currentUserId == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+
+return 0
+`
+
+export async function refreshAccessToken(rawRefreshToken: string) {
+    const payload = verifyToken(rawRefreshToken, 'refresh')
+
+    const tokenHash = hashToken(rawRefreshToken)
+    const refreshTokenKey = `refresh_token:${tokenHash}`
+
+    const consumed = Number(
+        await redis.eval(
+            consumeRefreshTokenScript,
+            [refreshTokenKey],
+            [payload.sub]
+        )
+    )
+
+    if (consumed !== 1) {
+        throw new ApiError(401, 'Invalid or revoked refresh token')
+    }
+
+    const accessToken = generateToken(payload.sub, 'access', '15m')
+    const refreshToken = generateToken(payload.sub, 'refresh', '7d')
+    const newTokenHash = hashToken(refreshToken)
+
+    await redis.set(`refresh_token:${newTokenHash}`, payload.sub, {
+        ex: REFRESH_TOKEN_TTL_SECONDS,
+    })
+
+    return {
+        accessToken,
+        refreshToken,
+    }
+}
+
+
+export async function logoutUser(rawRefreshToken?: string): Promise<void> {
+  if (!rawRefreshToken) return;
+
+  try {
+    const tokenHash = hashToken(rawRefreshToken);
+    await redis.del(`refresh_token:${tokenHash}`);
+  } catch (error) {
+    throw error;
+  }
 }
