@@ -35,7 +35,7 @@ export const POST = asyncHandler(async (request: NextRequest) => {
     201,
     {
       id: newUrl.id,
-      originalUrl: newUrl.originalUrl,
+      originalUrl: newUrl.longUrl,
       shortCode: newUrl.shortCode,
       shortUrl: `${appBaseUrl}/${newUrl.shortCode}`,
       expiresAt: newUrl.expiresAt,

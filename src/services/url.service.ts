@@ -50,7 +50,7 @@ export async function createShortUrlService({
 
     const newUrl = await db.url.create({
       data: {
-        originalUrl,
+        longUrl: originalUrl,
         shortCode: customCode,
         userId,
         expiresAt: expiresAt || null,
@@ -68,7 +68,7 @@ export async function createShortUrlService({
     try {
       const newUrl = await db.url.create({
         data: {
-          originalUrl,
+          longUrl: originalUrl,
           shortCode,
           userId,
           expiresAt: expiresAt || null,
