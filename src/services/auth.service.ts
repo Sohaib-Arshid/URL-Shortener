@@ -1,9 +1,9 @@
 import ApiError from "@/utils/apiError";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db"
-import type { RegisterInput } from "@/utils/authSchema";
+import type { RegisterInput } from "@/schema/authSchema";
 import { Prisma } from '@prisma/client'
-import type { LoginInput } from "@/utils/authSchema";
+import type { LoginInput } from "@/schema/authSchema";
 import { generateToken, verifyToken } from "@/utils/jwt";
 import { hashToken } from "@/utils/crypto";
 import { redis } from "@/lib/redis";
