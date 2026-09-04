@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { RegisterSchema } from '@/utils/authSchema'
+import { RegisterSchema } from '@/schema/authSchema'
 import { rateLimit } from '@/utils/rateLimiter'
 import { registerUser } from '@/services/auth.service'
 import ApiError from '@/utils/apiError'
