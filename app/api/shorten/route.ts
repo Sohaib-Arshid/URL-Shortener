@@ -10,10 +10,7 @@ import asyncHandler from "@/utils/asyncHandler";
 export const POST = asyncHandler(async (request: NextRequest) => {
   const { userId } = requireAuth(request);
 
-  await rateLimit(`shorten:${userId}`, {
-    maxRequests: 30,
-    windowSeconds: 60,
-  });
+  await rateLimit(`shorten:${userId}`, 30, 60);
 
   let rawBody: unknown;
   try {
