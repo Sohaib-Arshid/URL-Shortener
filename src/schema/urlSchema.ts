@@ -17,12 +17,13 @@ export const ShortenUrlSchema = z.object({
         return false;
       }
     }, { message: "Only HTTP and HTTPS protocols are allowed" })
-
     .refine((url) => {
       try {
         const parsed = new URL(url);
-        const appHost = process.env.NEXT_PUBLIC_APP_HOST || "localhost";
-        return !parsed.hostname.includes(appHost);
+        const configuredHost = (process.env.NEXT_PUBLIC_APP_HOST || "localhost").split(":")[0].toLowerCase();
+        const incomingHostname = parsed.hostname.toLowerCase();
+
+        return incomingHostname !== configuredHost;
       } catch {
         return false;
       }
