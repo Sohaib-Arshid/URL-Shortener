@@ -2,12 +2,10 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import crypto from 'node:crypto'
 import { db } from '@/lib/db'
 import { redis } from '@/lib/redis'
-import { analyticsQueue, AnalyticsJobPayload } from '@/lib/analyticsQueue'
+import { ANALYTICS_QUEUE_KEY, AnalyticsJobPayload } from '@/lib/analyticsQueue'
 import { asyncHandler } from '@/utils/asyncHandler'
 import { ApiError } from '@/utils/apiError'
 import { shortCodeSchema } from '@/validators/url.validator'
-
-export const runtime = 'nodejs'
 
 interface RouteContext {
     params: Promise<{ code: string }>
@@ -30,30 +28,14 @@ const isSafeDestination = (value: string): boolean => {
     }
 }
 
-const isValidIsoDate = (dateStr: string): boolean => {
-    const timestamp = Date.parse(dateStr)
-    return !Number.isNaN(timestamp)
-}
-
 const isCachedRedirect = (value: unknown): value is CachedRedirect => {
-    if (!value || typeof value !== 'object') {
-        return false
-    }
-
+    if (!value || typeof value !== 'object') return false
     const cached = value as Record<string, unknown>
-
-    const isValidTypes =
+    return (
         typeof cached.urlId === 'string' &&
         typeof cached.longUrl === 'string' &&
         (cached.expiresAt === null || typeof cached.expiresAt === 'string')
-
-    if (!isValidTypes) return false
-
-    if (typeof cached.expiresAt === 'string' && !isValidIsoDate(cached.expiresAt)) {
-        return false
-    }
-
-    return true
+    )
 }
 
 const getClientIp = (request: NextRequest): string | null => {
@@ -83,11 +65,9 @@ const enqueueAnalyticsEvent = (urlId: string, request: NextRequest): void => {
 
     after(async () => {
         try {
-            await analyticsQueue.add('url-click', payload, {
-                jobId: payload.eventId,
-            })
+            await redis.lpush(ANALYTICS_QUEUE_KEY, JSON.stringify(payload))
         } catch (error: unknown) {
-            console.error('[ANALYTICS_QUEUE_ERROR]', error)
+            console.error('[ANALYTICS_QUEUE_ERROR] Push failed:', error)
         }
     })
 }

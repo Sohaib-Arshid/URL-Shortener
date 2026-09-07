@@ -1,100 +1,97 @@
-import { Worker, Job, UnrecoverableError } from 'bullmq'
+import 'dotenv/config'
+import { redis } from '@/lib/redis'
 import { db } from '@/lib/db'
 import {
-    ANALYTICS_QUEUE_NAME,
-    ANALYTICS_DLQ_NAME,
-    bullmqRedisConnection,
-    analyticsDLQ,
+    ANALYTICS_QUEUE_KEY,
+    ANALYTICS_DLQ_KEY,
+    AnalyticsJobPayload,
 } from '@/lib/analyticsQueue'
-import type { AnalyticsJobPayload } from '@/lib/analyticsQueue'
 import { analyticsJobSchema } from '@/validators/analyticsJob.validator'
 import { AnalyticsService } from '@/services/analytics.service'
 
-export const analyticsWorker = new Worker<AnalyticsJobPayload>(
-    ANALYTICS_QUEUE_NAME,
-    async (job: Job<AnalyticsJobPayload>) => {
-        const parseResult = analyticsJobSchema.safeParse(job.data)
-        if (!parseResult.success) {
-            throw new UnrecoverableError(
-                `MALFORMED_JOB_PAYLOAD: ${JSON.stringify(parseResult.error.format())}`
-            )
-        }
+const BATCH_SIZE = 10
+const POLL_INTERVAL_MS = 1000
 
-        try {
-            return await AnalyticsService.recordClick(parseResult.data)
-        } catch (error: unknown) {
-            if (error instanceof Error && error.message.startsWith('ORPHAN_URL_ABORT')) {
-                throw new UnrecoverableError(error.message)
-            }
-            throw error
-        }
-    },
-    {
-        connection: bullmqRedisConnection,
-        concurrency: 10,
-    }
-)
+let isRunning = true
 
-analyticsWorker.on('completed', (job: Job) => {
-    console.log(`[WORKER_COMPLETED] Job: ${job.id} | Event: ${job.data?.eventId}`)
-})
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-analyticsWorker.on('failed', async (job: Job | undefined, err: Error) => {
-    if (!job) {
-        console.error(`[WORKER_FAILED] Unknown job failure: ${err.message}`)
+const processSingleJob = async (rawItem: unknown): Promise<void> => {
+    let parsedPayload: AnalyticsJobPayload
+
+    try {
+        parsedPayload =
+            typeof rawItem === 'string' ? JSON.parse(rawItem) : (rawItem as AnalyticsJobPayload)
+    } catch {
+        console.error('[WORKER_CORRUPT_JSON] Could not parse queue item:', rawItem)
+        await redis.lpush(ANALYTICS_DLQ_KEY, JSON.stringify({ raw: rawItem, error: 'JSON_PARSE_FAILED' }))
         return
     }
 
-    console.error(
-        `[WORKER_ATTEMPT_FAILED] Job ${job.id} (Attempt ${job.attemptsMade}/${job.opts.attempts}): ${err.message}`
-    )
+    const validation = analyticsJobSchema.safeParse(parsedPayload)
+    if (!validation.success) {
+        console.error('[WORKER_VALIDATION_ERROR] Malformed job:', validation.error.format())
+        await redis.lpush(
+            ANALYTICS_DLQ_KEY,
+            JSON.stringify({ payload: parsedPayload, error: 'VALIDATION_FAILED' })
+        )
+        return
+    }
 
-    const isExhausted = job.attemptsMade >= (job.opts.attempts || 3)
-    const isUnrecoverable = err instanceof UnrecoverableError
+    try {
+        const result = await AnalyticsService.recordClick(validation.data)
+        if (result.status === 'skipped') {
+            console.log(`[IDEMPOTENT_SKIP] Event ${validation.data.eventId} already recorded.`)
+        } else {
+            console.log(`[WORKER_SUCCESS] Processed click for URL: ${validation.data.urlId}`)
+        }
+    } catch (error: unknown) {
+        console.error(`[WORKER_DB_ERROR] Failed to write event ${validation.data.eventId}:`, error)
+        await redis.lpush(
+            ANALYTICS_DLQ_KEY,
+            JSON.stringify({
+                payload: validation.data,
+                error: error instanceof Error ? error.message : 'DB_INSERT_FAILED',
+                failedAt: new Date().toISOString(),
+            })
+        )
+    }
+}
 
-    if (isExhausted || isUnrecoverable) {
-        console.error(`[ROUTING_TO_DLQ] Job ${job.id} failed permanently. Sending to ${ANALYTICS_DLQ_NAME}...`)
+export const startWorker = async () => {
+    console.log('[UPSTASH_WORKER] Started listening on Upstash Redis queue...')
 
+    while (isRunning) {
         try {
-            await analyticsDLQ.add(
-                'failed-click-event',
-                {
-                    originalJobId: job.id,
-                    payload: job.data,
-                    failedReason: err.message,
-                    stacktrace: job.stacktrace,
-                    failedAt: new Date().toISOString(),
-                    totalAttempts: job.attemptsMade,
-                },
-                {
-                    jobId: `dlq:${job.id}`,
-                    removeOnComplete: false,
-                }
-            )
-            console.log(`[DLQ_SAVED] Job ${job.id} isolated in DLQ with ID dlq:${job.id}`)
-        } catch (dlqError: unknown) {
-            console.error(`[CRITICAL_DLQ_FAILURE] Could not isolate job ${job.id} in DLQ:`, dlqError)
+            // Upstash Redis se right side se items pop karein
+            const items = await redis.rpop<string[] | string>(ANALYTICS_QUEUE_KEY, BATCH_SIZE)
+
+            if (!items || (Array.isArray(items) && items.length === 0)) {
+                await sleep(POLL_INTERVAL_MS)
+                continue
+            }
+
+            const batch = Array.isArray(items) ? items : [items]
+
+            // Parallel batch processing
+            await Promise.allSettled(batch.map((item) => processSingleJob(item)))
+        } catch (pollError: unknown) {
+            console.error('[WORKER_POLL_ERROR] Error fetching from Upstash:', pollError)
+            await sleep(2000)
         }
     }
-})
 
-analyticsWorker.on('error', (err: Error) => {
-    console.error('[WORKER_FATAL_CONNECTION_ERROR]', err)
-})
+    console.log('[UPSTASH_WORKER] Stopped gracefully.')
+}
 
-let isShuttingDown = false
-
-const shutdownWorker = async (signal: string) => {
-    if (isShuttingDown) return
-    isShuttingDown = true
-
-    console.log(`\n[WORKER_SHUTDOWN] Received ${signal}. Shutting down cleanly...`)
-    await analyticsWorker.close()
-    await bullmqRedisConnection.quit()
+const handleShutdown = async (signal: string) => {
+    console.log(`\n[WORKER_SHUTDOWN] Signal ${signal} received. Cleaning up...`)
+    isRunning = false
     await db.$disconnect()
-    console.log('[WORKER_SHUTDOWN] Clean exit complete.')
     process.exit(0)
 }
 
-process.on('SIGINT', () => shutdownWorker('SIGINT'))
-process.on('SIGTERM', () => shutdownWorker('SIGTERM'))
+process.on('SIGINT', () => handleShutdown('SIGINT'))
+process.on('SIGTERM', () => handleShutdown('SIGTERM'))
+
+startWorker()

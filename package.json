@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "worker:analytics": "tsx src/workers/analytics.worker.ts"
+    "worker:analytics": "tsx --env-file=.env src/workers/analytics.worker.ts"
   },
   "dependencies": {
     "@langchain/openai": "^1.5.6",
