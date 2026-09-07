@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { cookies } from "next/headers";
-import { LoginSchema } from "@/schema/authSchema";
+import { LoginSchema } from "@/validators/authSchema";
 import { rateLimit } from "@/utils/rateLimiter";
 import { login } from "@/services/auth.service";
 import ApiError from "@/utils/apiError";

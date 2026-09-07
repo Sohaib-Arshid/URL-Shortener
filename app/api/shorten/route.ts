@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAuth } from "@/middleware/auth.middleware";
-import { ShortenUrlSchema } from "@/schema/urlSchema";
+import { ShortenUrlSchema } from "@/validators/urlSchema";
 import { createShortUrlService } from "@/services/url.service";
 import { rateLimit } from "@/utils/rateLimiter";
 import ApiResponse from "@/utils/apiResponse";
