@@ -1,15 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
+import crypto from 'node:crypto'
 import { db } from '@/lib/db'
 import { redis } from '@/lib/redis'
+import { analyticsQueue, AnalyticsJobPayload } from '@/lib/analyticsQueue'
 import { asyncHandler } from '@/utils/asyncHandler'
 import { ApiError } from '@/utils/apiError'
 import { shortCodeSchema } from '@/validators/url.validator'
+
+export const runtime = 'nodejs'
 
 interface RouteContext {
     params: Promise<{ code: string }>
 }
 
 type CachedRedirect = {
+    urlId: string
     longUrl: string
     expiresAt: string | null
 }
@@ -25,6 +30,11 @@ const isSafeDestination = (value: string): boolean => {
     }
 }
 
+const isValidIsoDate = (dateStr: string): boolean => {
+    const timestamp = Date.parse(dateStr)
+    return !Number.isNaN(timestamp)
+}
+
 const isCachedRedirect = (value: unknown): value is CachedRedirect => {
     if (!value || typeof value !== 'object') {
         return false
@@ -32,10 +42,54 @@ const isCachedRedirect = (value: unknown): value is CachedRedirect => {
 
     const cached = value as Record<string, unknown>
 
-    return (
+    const isValidTypes =
+        typeof cached.urlId === 'string' &&
         typeof cached.longUrl === 'string' &&
         (cached.expiresAt === null || typeof cached.expiresAt === 'string')
-    )
+
+    if (!isValidTypes) return false
+
+    if (typeof cached.expiresAt === 'string' && !isValidIsoDate(cached.expiresAt)) {
+        return false
+    }
+
+    return true
+}
+
+const getClientIp = (request: NextRequest): string | null => {
+    const forwardedFor = request.headers.get('x-forwarded-for')
+    if (forwardedFor) {
+        const ips = forwardedFor.split(',').map((ip) => ip.trim())
+        return ips[0] || null
+    }
+    return request.headers.get('x-real-ip')?.trim() || null
+}
+
+const enqueueAnalyticsEvent = (urlId: string, request: NextRequest): void => {
+    const payload: AnalyticsJobPayload = {
+        eventId: crypto.randomUUID(),
+        urlId,
+        ipAddress: getClientIp(request),
+        userAgent: request.headers.get('user-agent'),
+        referer: request.headers.get('referer'),
+        country:
+            request.headers.get('cf-ipcountry') ??
+            request.headers.get('x-vercel-ip-country'),
+        city:
+            request.headers.get('cf-ipcity') ??
+            request.headers.get('x-vercel-ip-city'),
+        clickedAt: new Date().toISOString(),
+    }
+
+    after(async () => {
+        try {
+            await analyticsQueue.add('url-click', payload, {
+                jobId: payload.eventId,
+            })
+        } catch (error: unknown) {
+            console.error('[ANALYTICS_QUEUE_ERROR]', error)
+        }
+    })
 }
 
 export const GET = asyncHandler(
@@ -56,24 +110,24 @@ export const GET = asyncHandler(
         try {
             const cachedValue = await redis.get<unknown>(cacheKey)
 
-            if (isCachedRedirect(cachedValue)) {
-                const cachedExpiry = cachedValue.expiresAt
-                    ? new Date(cachedValue.expiresAt)
-                    : null
+            if (cachedValue !== null && cachedValue !== undefined) {
+                if (isCachedRedirect(cachedValue)) {
+                    const cachedExpiry = cachedValue.expiresAt
+                        ? new Date(cachedValue.expiresAt)
+                        : null
 
-                const cachedIsExpired =
-                    cachedExpiry !== null &&
-                    !Number.isNaN(cachedExpiry.getTime()) &&
-                    cachedExpiry.getTime() <= Date.now()
+                    const cachedIsExpired =
+                        cachedExpiry !== null && cachedExpiry.getTime() <= Date.now()
 
-                if (!cachedIsExpired && isSafeDestination(cachedValue.longUrl)) {
-                    return NextResponse.redirect(cachedValue.longUrl, 302)
+                    if (!cachedIsExpired && isSafeDestination(cachedValue.longUrl)) {
+                        enqueueAnalyticsEvent(cachedValue.urlId, request)
+                        return NextResponse.redirect(cachedValue.longUrl, 302)
+                    }
                 }
-
                 await redis.del(cacheKey)
             }
         } catch (redisError: unknown) {
-            console.error('[REDIS_FAILOVER] Cache read failed', redisError)
+            console.error('[REDIS_CACHE_READ_ERROR]', redisError)
         }
 
         const record = await db.url.findUnique({
@@ -101,6 +155,7 @@ export const GET = asyncHandler(
         }
 
         const cacheValue: CachedRedirect = {
+            urlId: record.id,
             longUrl: record.longUrl,
             expiresAt: record.expiresAt?.toISOString() ?? null,
         }
@@ -114,8 +169,10 @@ export const GET = asyncHandler(
         try {
             await redis.set(cacheKey, cacheValue, { ex: ttl })
         } catch (redisError: unknown) {
-            console.error('[REDIS_FAILOVER] Cache write failed', redisError)
+            console.error('[REDIS_CACHE_WRITE_ERROR]', redisError)
         }
+
+        enqueueAnalyticsEvent(record.id, request)
 
         return NextResponse.redirect(record.longUrl, 302)
     }

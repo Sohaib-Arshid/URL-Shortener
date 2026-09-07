@@ -7,58 +7,132 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// ============================================================================
+/// MODEL: User
+/// Role: Stores registered platform accounts, credentials, and ownership links.
+/// ============================================================================
 model User {
+  /// Unique identifier (UUIDv4)
   id           String    @id @default(uuid())
+  /// Full name of the user
   name         String
+  /// Unique email used for authentication and account discovery
   email        String    @unique
+  /// Argon2id or Bcrypt hashed password string
   passwordHash String
+  /// 1-to-Many relation: URLs created and owned by this account
   urls         Url[]
+  /// Account creation timestamp
   createdAt    DateTime  @default(now())
+  /// Account update timestamp
   updatedAt    DateTime  @updatedAt
 }
 
+/// ============================================================================
+/// MODEL: Url
+/// Role: Core URL routing registry storing short codes and destination links.
+/// ============================================================================
 model Url {
+  /// Unique identifier (UUIDv4)
   id          String       @id @default(uuid())
+  /// Destination URL where client traffic is routed
   longUrl     String       @db.Text
+  /// Unique alphanumeric vanity or generated short path identifier (Base62)
   shortCode   String       @unique
+  /// Denormalized aggregate counter for quick display without full-table aggregations
   clickCount  Int          @default(0)
-  
-  userId      String?      // Optional: guest users link short kar sakein (strictly login chahiye to 'String' kar dein)
+
+  /// Foreign key for user ownership (Nullable for anonymous / guest shortenings)
+  userId      String?
+  /// Relation to the parent User account (Cascades on account purge)
   user        User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
+  /// 1-to-Many relation: Raw click event stream feeding the Analytics Engine
   analytics   Analytics[]
+  /// 1-to-1 relation: AI semantic classifications, content summarization, and vector IDs
   aiMetadata  AiMetadata?
+  /// Expiration timestamp after which redirection halts (HTTP 410 Gone)
   expiresAt   DateTime?
+  /// Record creation timestamp
   createdAt   DateTime     @default(now())
+  /// Record update timestamp
   updatedAt   DateTime     @updatedAt
 
+  /// Optimizes user dashboard queries (fetching all URLs belonging to a user)
   @@index([userId])
+  /// Optimizes redirection lookup fallback when Redis cache misses
+  @@index([shortCode])
 }
 
+/// ============================================================================
+/// MODEL: Analytics
+/// Role: Append-only raw event stream ingested asynchronously via Redis queue.
+/// ============================================================================
 model Analytics {
+  /// Unique event identifier (UUIDv4)
   id        String   @id @default(uuid())
+  /// Foreign key referencing the parent shortened URL
   urlId     String
+  /// Cascade delete ensures deleting a URL purges all associated analytics events
   url       Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
-  
-  country   String?
-  city      String?
-  device    String?
-  browser   String?
-  ipAddress String?
+
+  /// ISO 3166-1 alpha-2 country code (e.g., "PK", "US", "GB")
+  country   String?  @db.VarChar(10)
+  /// Geolocation-resolved city name (e.g., "Haripur", "Islamabad")
+  city      String?  @db.VarChar(100)
+
+  /// Normalized form factor: "Mobile", "Desktop", "Tablet", "Bot"
+  device    String?  @db.VarChar(50)
+  /// Resolved user-agent browser family: "Chrome", "Safari", "Firefox", "Edge"
+  browser   String?  @db.VarChar(50)
+  /// Host operating system family: "Android", "iOS", "Windows", "macOS", "Linux"
+  os        String?  @db.VarChar(50)
+
+  /// Originating platform or referring URL (e.g., "linkedin.com", "direct")
+  referer   String?  @db.VarChar(255)
+  /// Client IP address (supports IPv4 max 15 chars and IPv6 max 45 chars)
+  ipAddress String?  @db.VarChar(45)
+
+  /// Exact timestamp when the redirection occurred
   clickedAt DateTime @default(now())
 
-  @@index([urlId])
-  @@index([clickedAt])
+  // ==========================================
+  // COMPOSITE INDEXES FOR ANALYTICAL QUERIES
+  // ==========================================
+
+  /// Optimizes time-series analytics (e.g., clicks over past 24h, 7d, 30d for a URL)
+  @@index([urlId, clickedAt], name: "idx_analytics_url_clicked_at")
+
+  /// Optimizes geographic breakdown aggregations (GROUP BY country for a URL)
+  @@index([urlId, country], name: "idx_analytics_url_country")
+
+  /// Optimizes device distribution breakdowns (GROUP BY device for a URL)
+  @@index([urlId, device], name: "idx_analytics_url_device")
+
+  /// Global index for system-wide time-range aggregations and data retention purges
+  @@index([clickedAt], name: "idx_analytics_clicked_at")
 }
 
+/// ============================================================================
+/// MODEL: AiMetadata
+/// Role: Stores asynchronous AI scrapings, summaries, tags, and embeddings.
+/// ============================================================================
 model AiMetadata {
+  /// Unique identifier (UUIDv4)
   id          String   @id @default(uuid())
+  /// Foreign key identifying the parent URL (1-to-1 constraint)
   urlId       String   @unique
+  /// Parent URL relation (Cascades on URL deletion)
   url         Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
-  
+
+  /// Extracted OpenGraph or HTML title of the destination URL
   title       String?
+  /// AI-generated abstractive content summary
   summary     String?  @db.Text
+  /// Categorical classification (e.g., "Technology", "Finance", "Social")
   category    String?
+  /// External vector database pointer (e.g., Pinecone / Qdrant record ID)
   vectorId    String?
+  /// Processing timestamp
   processedAt DateTime @default(now())
 }
