@@ -1,80 +1,122 @@
-import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { redis } from "@/lib/redis";
-import { asyncHandler } from "@/utils/asyncHandler";
-import { ApiError } from "@/utils/apiError";
-import { shortCodeSchema } from "@/validators/url.validator";
+import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/lib/db'
+import { redis } from '@/lib/redis'
+import { asyncHandler } from '@/utils/asyncHandler'
+import { ApiError } from '@/utils/apiError'
+import { shortCodeSchema } from '@/validators/url.validator'
 
 interface RouteContext {
-  params: Promise<{ code: string }>;
+    params: Promise<{ code: string }>
 }
 
-const DEFAULT_CACHE_TTL_SECONDS = 86400;
+type CachedRedirect = {
+    longUrl: string
+    expiresAt: string | null
+}
+
+const DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+const isSafeDestination = (value: string): boolean => {
+    try {
+        const destination = new URL(value)
+        return ['http:', 'https:'].includes(destination.protocol)
+    } catch {
+        return false
+    }
+}
+
+const isCachedRedirect = (value: unknown): value is CachedRedirect => {
+    if (!value || typeof value !== 'object') {
+        return false
+    }
+
+    const cached = value as Record<string, unknown>
+
+    return (
+        typeof cached.longUrl === 'string' &&
+        (cached.expiresAt === null || typeof cached.expiresAt === 'string')
+    )
+}
 
 export const GET = asyncHandler(
-  async (request: NextRequest, context: RouteContext) => {
-    const { code } = await context.params;
+    async (request: NextRequest, context: RouteContext) => {
+        const { code } = await context.params
 
-    const validation = shortCodeSchema.safeParse(code);
-    if (!validation.success) {
-      throw new ApiError(400, validation.error.issues[0]?.message || "Invalid short code");
-    }
-
-    const validCode = validation.data;
-    const cacheKey = `url:${validCode}`;
-
-    try {
-      const cachedTarget = await redis.get<string>(cacheKey);
-      if (cachedTarget) {
-        return NextResponse.redirect(cachedTarget, 302);
-      }
-    } catch (redisErr) {
-      console.error(`[REDIS_FAILOVER] Read failed:`, redisErr);
-    }
-
-    const record = await db.url.findUnique({
-      where: { shortCode: validCode },
-      select: {
-        longUrl: true,
-        expiresAt: true,
-      },
-    });
-
-    if (!record) {
-      throw new ApiError(404, "Short URL not found");
-    }
-
-    const now = Date.now();
-    if (record.expiresAt && new Date(record.expiresAt).getTime() <= now) {
-      throw new ApiError(410, "This short link has expired");
-    }
-
-    try {
-      const parsedDestination = new URL(record.longUrl);
-      if (!["http:", "https:"].includes(parsedDestination.protocol)) {
-        throw new Error();
-      }
-    } catch {
-      throw new ApiError(422, "Destination URL is unsafe or malformed");
-    }
-
-    void (async () => {
-      try {
-        let ttl = DEFAULT_CACHE_TTL_SECONDS;
-        if (record.expiresAt) {
-          const remainingSeconds = Math.floor(
-            (new Date(record.expiresAt).getTime() - now) / 1000
-          );
-          if (remainingSeconds > 0) {
-            ttl = Math.min(remainingSeconds, DEFAULT_CACHE_TTL_SECONDS);
-          }
+        const validation = shortCodeSchema.safeParse(code)
+        if (!validation.success) {
+            throw new ApiError(
+                400,
+                validation.error.issues[0]?.message || 'Invalid short code'
+            )
         }
-        await redis.set(cacheKey, record.longUrl, { ex: ttl });
-      } catch (cacheWriteErr) {
-        console.error(`[REDIS_FAILOVER] Write failed:`, cacheWriteErr);
-      }
-    })();
 
-    return NextResponse.redirect(record.longUrl, 302);
-  }
-);
+        const validCode = validation.data
+        const cacheKey = `url:redirect:${validCode}`
+
+        try {
+            const cachedValue = await redis.get<unknown>(cacheKey)
+
+            if (isCachedRedirect(cachedValue)) {
+                const cachedExpiry = cachedValue.expiresAt
+                    ? new Date(cachedValue.expiresAt)
+                    : null
+
+                const cachedIsExpired =
+                    cachedExpiry !== null &&
+                    !Number.isNaN(cachedExpiry.getTime()) &&
+                    cachedExpiry.getTime() <= Date.now()
+
+                if (!cachedIsExpired && isSafeDestination(cachedValue.longUrl)) {
+                    return NextResponse.redirect(cachedValue.longUrl, 302)
+                }
+
+                await redis.del(cacheKey)
+            }
+        } catch (redisError: unknown) {
+            console.error('[REDIS_FAILOVER] Cache read failed', redisError)
+        }
+
+        const record = await db.url.findUnique({
+            where: { shortCode: validCode },
+            select: {
+                id: true,
+                longUrl: true,
+                expiresAt: true,
+            },
+        })
+
+        if (!record) {
+            throw new ApiError(404, 'Short URL not found')
+        }
+
+        const now = Date.now()
+        const expiresAtMillis = record.expiresAt?.getTime() ?? null
+
+        if (expiresAtMillis !== null && expiresAtMillis <= now) {
+            throw new ApiError(410, 'This short link has expired')
+        }
+
+        if (!isSafeDestination(record.longUrl)) {
+            throw new ApiError(422, 'Destination URL is unsafe or malformed')
+        }
+
+        const cacheValue: CachedRedirect = {
+            longUrl: record.longUrl,
+            expiresAt: record.expiresAt?.toISOString() ?? null,
+        }
+
+        let ttl = DEFAULT_CACHE_TTL_SECONDS
+        if (expiresAtMillis !== null) {
+            const remainingSeconds = Math.floor((expiresAtMillis - now) / 1000)
+            ttl = Math.max(1, Math.min(remainingSeconds, DEFAULT_CACHE_TTL_SECONDS))
+        }
+
+        try {
+            await redis.set(cacheKey, cacheValue, { ex: ttl })
+        } catch (redisError: unknown) {
+            console.error('[REDIS_FAILOVER] Cache write failed', redisError)
+        }
+
+        return NextResponse.redirect(record.longUrl, 302)
+    }
+)
