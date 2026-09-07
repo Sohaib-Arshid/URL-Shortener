@@ -9,7 +9,7 @@ import {
 import { analyticsJobSchema } from '@/validators/analyticsJob.validator'
 import { AnalyticsService } from '@/services/analytics.service'
 
-const BATCH_SIZE = 10
+const BATCH_SIZE = 5
 const POLL_INTERVAL_MS = 1000
 
 let isRunning = true
@@ -63,7 +63,6 @@ export const startWorker = async () => {
 
     while (isRunning) {
         try {
-            // Upstash Redis se right side se items pop karein
             const items = await redis.rpop<string[] | string>(ANALYTICS_QUEUE_KEY, BATCH_SIZE)
 
             if (!items || (Array.isArray(items) && items.length === 0)) {
@@ -73,8 +72,9 @@ export const startWorker = async () => {
 
             const batch = Array.isArray(items) ? items : [items]
 
-            // Parallel batch processing
-            await Promise.allSettled(batch.map((item) => processSingleJob(item)))
+            for (const item of batch) {
+                await processSingleJob(item)
+            }
         } catch (pollError: unknown) {
             console.error('[WORKER_POLL_ERROR] Error fetching from Upstash:', pollError)
             await sleep(2000)

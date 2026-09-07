@@ -16,7 +16,6 @@ export class AnalyticsService {
             clickedAt,
         } = data
 
-        // 1. Fast State Check
         const alreadyProcessed = await db.analytics.findUnique({
             where: { id: eventId },
             select: { id: true },
@@ -29,7 +28,6 @@ export class AnalyticsService {
         const { device, browser, os } = parseUserAgent(userAgent)
         const parsedClickedAt = new Date(clickedAt)
 
-        // 2. Atomic Transaction
         try {
             await db.$transaction(
                 async (tx) => {
@@ -66,6 +64,7 @@ export class AnalyticsService {
                 },
                 {
                     isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+                    maxWait: 5000,
                     timeout: 10000,
                 }
             )
