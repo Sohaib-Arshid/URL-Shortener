@@ -25,7 +25,7 @@ export const GET = asyncHandler(async (_request: NextRequest, context: RouteCont
         throw new ApiError(404, 'URL resource not found')
     }
 
-    const [countryStats, referrerStats, recentClicks] = await Promise.all([
+    const [countryStats, referrerStats, deviceStats, recentClicks] = await Promise.all([
         db.analytics.groupBy({
             by: ['country'],
             where: { urlId: id },
@@ -48,6 +48,17 @@ export const GET = asyncHandler(async (_request: NextRequest, context: RouteCont
             },
             take: 10,
         }),
+        db.analytics.groupBy({
+            by: ['device'],
+            where: { urlId: id },
+            _count: { device: true },
+            orderBy: {
+                _count: {
+                    device: 'desc',
+                },
+            },
+            take: 10,
+        }),
         db.analytics.findMany({
             where: { urlId: id },
             take: 20,
@@ -55,7 +66,9 @@ export const GET = asyncHandler(async (_request: NextRequest, context: RouteCont
             select: {
                 id: true,
                 ipAddress: true,
-                userAgent: true,
+                device: true,
+                browser: true,
+                os: true,
                 country: true,
                 city: true,
                 referer: true,
@@ -74,6 +87,11 @@ export const GET = asyncHandler(async (_request: NextRequest, context: RouteCont
         clicks: item._count.referer,
     }))
 
+    const devices = deviceStats.map((item) => ({
+        device: item.device || 'Unknown',
+        clicks: item._count.device,
+    }))
+
     return NextResponse.json({
         success: true,
         statusCode: 200,
@@ -85,6 +103,7 @@ export const GET = asyncHandler(async (_request: NextRequest, context: RouteCont
             },
             countries,
             referrers,
+            devices,
             recentClicks,
         },
     })
