@@ -1,46 +1,60 @@
-import { NextRequest } from "next/server";
-import { requireAuth } from "@/middleware/auth.middleware";
-import { ShortenUrlSchema } from "@/validators/urlSchema";
-import { createShortUrlService } from "@/services/url.service";
-import { rateLimit } from "@/utils/rateLimiter";
-import ApiResponse from "@/utils/apiResponse";
-import ApiError from "@/utils/apiError";
-import asyncHandler from "@/utils/asyncHandler";
+import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/lib/db'
+import { asyncHandler } from '@/utils/asyncHandler'
+import { Prisma } from '@prisma/client'
 
-export const POST = asyncHandler(async (request: NextRequest) => {
-  const { userId } = requireAuth(request);
+export const GET = asyncHandler(async (request: NextRequest) => {
+  const { searchParams } = new URL(request.url)
 
-  await rateLimit(`shorten:${userId}`, 30, 60);
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
+  const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') || '10', 10)))
+  const search = searchParams.get('search')?.trim() || ''
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    throw new ApiError(400, "Malformed or empty JSON request body");
-  }
+  const skip = (page - 1) * limit
 
-  const parsed = ShortenUrlSchema.parse(rawBody);
+  const where: Prisma.UrlWhereInput = search
+    ? {
+      OR: [
+        { shortCode: { contains: search } },
+        { longUrl: { contains: search } },
+      ],
+    }
+    : {}
 
-  const newUrl = await createShortUrlService({
-    userId,
-    originalUrl: parsed.originalUrl,
-    customCode: parsed.customCode,
-    expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null,
-  });
+  const [urls, totalCount] = await Promise.all([
+    db.url.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        shortCode: true,
+        longUrl: true,
+        clickCount: true,
+        expiresAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }),
+    db.url.count({ where }),
+  ])
 
-  const appBaseUrl =
-    process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const totalPages = Math.ceil(totalCount / limit)
 
-  return ApiResponse.json(
-    201,
-    {
-      id: newUrl.id,
-      originalUrl: newUrl.longUrl,
-      shortCode: newUrl.shortCode,
-      shortUrl: `${appBaseUrl}/${newUrl.shortCode}`,
-      expiresAt: newUrl.expiresAt,
-      createdAt: newUrl.createdAt,
+  return NextResponse.json({
+    success: true,
+    statusCode: 200,
+    data: {
+      items: urls,
+      pagination: {
+        page,
+        limit,
+        totalItems: totalCount,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
     },
-    "Short URL created successfully"
-  );
-});
+  })
+})
