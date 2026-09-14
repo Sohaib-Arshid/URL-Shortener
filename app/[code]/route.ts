@@ -17,12 +17,12 @@ type CachedRedirect = {
     expiresAt: string | null
 }
 
-const DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60
+const DEFAULT_CACHE_TTL_SECONDS = 86400
 
 const isSafeDestination = (value: string): boolean => {
     try {
         const destination = new URL(value)
-        return ['http:', 'https:'].includes(destination.protocol)
+        return destination.protocol === 'http:' || destination.protocol === 'https:'
     } catch {
         return false
     }
