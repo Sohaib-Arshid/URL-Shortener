@@ -5,7 +5,7 @@ const CUSTOM_CODE_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 export const ShortenUrlSchema = z.object({
   originalUrl: z
-    .string({ required_error: "Original URL is required" })
+    .string({ error: "Original URL is required" })
     .trim()
     .url("Invalid URL format")
     .max(2048, "URL exceeds maximum length of 2048 characters")

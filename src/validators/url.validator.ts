@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const shortCodeSchema = z
     .string({
-        required_error: "Short code is required",
+        error: "Short code is required",
         invalid_type_error: "Short code must be a string",
     })
     .trim()
